@@ -4,6 +4,8 @@ import pandas as pd
 import os
 from collections import Counter
 from glob import glob
+import scipy.sparse
+import numpy as np
 
 
 def make_sessions_info(file_path, session_length):
@@ -68,3 +70,19 @@ def prepare_train_set(path_to_csv_files, session_length=10):
     sessions = sessions.applymap(lambda x: site_freq[x][0] if isinstance(x, str) else x)
 
     return sessions, site_freq
+
+
+def make_csr_matrix(sessions, site_freq):
+    '''
+    Создание разряженной матрицы количества посещений сайтов за сессию.
+    Элемент  (i, j) соответствует количеству посещений сайта j в сессии i
+    :param sessions: сессии пользователей (без user_id)
+    :param site_freq: посещаемость всех сайтов во всех сессиях
+    :return: scipy.sparce.csr_matrix
+    '''
+    output = scipy.sparce.csr_matrix((len(sessions), len(site_freq) + 1), dtype=np.int)
+    for i in range(len(sessions)):
+        c = Counter(sessions[i, :-1])
+        output[i, list(c)] += np.array(list(c.values()))
+
+    return output[:, 1:]
