@@ -6,6 +6,7 @@ from collections import Counter
 from glob import glob
 import scipy.sparse
 import numpy as np
+import pickle
 
 
 def make_sessions_info(file_path, session_length):
@@ -86,3 +87,47 @@ def make_csr_matrix(sessions, site_freq):
         output[i, list(c)] += np.array(list(c.values()))
 
     return output[:, 1:]
+
+def prepare_sparse_train_set_window(path_to_csv_files, site_freq_path, session_length, window_size):
+    '''
+    Формирование массива сессий с пересечениями = длина сессии - ширина окна.
+    :param path_to_csv_files: путь к папке с .csv файлами пользователей
+    :param site_freq_path: путь к .pickle файлу со словарём файлов
+    :param session_length: длина сессии
+    :param window_size: ширина окна непересекающейся части сессии
+    :return: scipy.sparse.csr_matrix -- сессии,
+             numpy.array -- id пользователя для каждой сессии
+    '''
+    with open(site_freq_path, 'rb') as fo:
+        site_freq = pickle.load(fo)
+    row = []
+    col = []
+    values = []
+    user_ids = []
+    current_row = 0
+    for path in glob(os.path.join(path_to_csv_files, '*.csv')):
+        data = pd.read_csv(path)
+        username, _ = os.path.splitext(os.path.basename(path))
+        user_id = int(username[-4:])
+
+        data_len = len(data)
+        for i in range(0, data_len, window_size):
+            last_index = min(data_len, i + session_length)
+            empty_data_len = i + session_length - last_index
+            df = data.iloc[i:last_index].site.apply(lambda x: site_freq[x][0])
+
+            cnt = Counter(list(df) + [0 for i in range(empty_data_len)])
+            sites = list(cnt)
+            user_ids.append(user_id)
+            row += [current_row for i in range(len(sites))]
+            col += sites
+            values += [cnt[s] for s in sites]
+
+            current_row += 1
+
+    matrix_shape = (current_row, len(site_freq) + 1)
+
+    X = scipy.sparse.csr_matrix((values, (row, col)), shape=matrix_shape)[:, 1:]
+    y = np.array(user_ids)
+
+    return X, y
