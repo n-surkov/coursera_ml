@@ -131,3 +131,57 @@ def prepare_sparse_train_set_window(path_to_csv_files, site_freq_path, session_l
     y = np.array(user_ids)
 
     return X, y
+
+def prepare_train_set_with_fe(path_to_csv_files, site_freq_path, feature_names,
+                              session_length=10, window_size=10):
+    '''
+    Формирование DataFrame'a сессий с столбцами [site1, ..., site{session_length},
+    time_diff1, ..., time_diff{session_length - 1}, timespan, unique, start, day_of_week, target]
+    здесь:
+    siteN -- индекс N-го сайта сессии
+    time_diffN -- разница вежду посещением N-го и (N+1)-го сайтов [сек]
+    timespan -- продолжительность сессии [сек]
+    unique -- число уникальных сайтов в сессии
+    start -- час начала сессии
+    day_of_week -- день недели
+    target -- id пользователя
+    :param path_to_csv_files: путь к папке с .csv файлами пользователей
+    :param site_freq_path: путь к .pickle файлу со словарём файлов
+    :param feature_names: название столбцов формирующегося DataFrame'a
+    :param session_length: длина сессии
+    :param window_size: ширина окна непересекающейся части сессии
+    :return: pandas.DataFrame
+    '''
+    if len(feature_names) != (2 * session_length - 1 + 5):
+        raise ValueError('length of feature_names must be equal to 2 * session_length - 1 + 5')
+
+    with open(site_freq_path, 'rb') as fo:
+        site_freq = pickle.load(fo)
+
+    output = []
+    for path in glob(os.path.join(path_to_csv_files, '*.csv')):
+        data = pd.read_csv(path)
+        username, _ = os.path.splitext(os.path.basename(path))
+        user_id = int(username[-4:])
+
+        data_len = len(data)
+        for i in range(0, data_len, window_size):
+            last_index = min(data_len, i + session_length)
+            empty_data_len = i + session_length - last_index
+            sub_df = data.iloc[i:last_index]
+            sites = list(sub_df.site.apply(lambda x: site_freq[x][0])) + [0 for i in range(empty_data_len)]
+            timestamps = sub_df.timestamp.astype(np.datetime64)
+            times = [(timestamps.iloc[i+1] - timestamps.iloc[i]).total_seconds() for i in range(len(timestamps)-1)] + \
+                    [0 for i in range(empty_data_len)]
+            timespan = (timestamps.max() - timestamps.min()).total_seconds()
+            unique = (np.unique(sites) > 0).sum()
+            start = timestamps.min().hour
+            day_of_week = timestamps.min().dayofweek
+            target = user_id
+
+            output.append(sites + times + [timespan, unique, start, day_of_week, target])
+
+    output = pd.DataFrame(output, dtype=int)
+    output.columns = feature_names
+
+    return output
