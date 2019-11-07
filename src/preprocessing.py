@@ -300,3 +300,67 @@ def prepare_train_set_with_fe_ext(path_to_csv_files, site_freq_path, feature_nam
     output.columns = feature_names
 
     return output
+
+
+def prepare_train_set_time_window(path_to_csv_files, site_freq_path, session_length, window_size):
+    '''
+    Формирование массива сессий с пересечениями = длина сессии - ширина окна.
+    При этом длиной сессии считается разница между посещением первого и последнего сайта сессии
+    :param path_to_csv_files: путь к папке с .csv файлами пользователей
+    :param site_freq_path: путь к .pickle файлу со словарём файлов
+    :param session_length: длина сессии в секундах
+    :param window_size: ширина окна непересекающейся части сессии в секундах
+    :return: DataFrame со столбцами [site1, ..., siteN, target], где N -- максимальная длина сессии
+    '''
+    with open(site_freq_path, 'rb') as fo:
+        site_freq = pickle.load(fo)
+
+    sessions = []
+    targets = []
+    max_length = 0
+    for path in glob(os.path.join(path_to_csv_files, '*.csv')):
+        data = pd.read_csv(path)
+        data.timestamp = data.timestamp.astype(np.datetime64)
+        username, _ = os.path.splitext(os.path.basename(path))
+        user_id = int(username[-4:])
+
+        start_time = data.iloc[0].timestamp
+        data_len = len(data)
+        current_session = []
+        for i in range(data_len):
+            if (data.iloc[i].timestamp - start_time).total_seconds() > window_size:
+                for j in range(i, data_len):
+                    if (data.iloc[j].timestamp - start_time).total_seconds() > session_length:
+                        sessions.append(current_session)
+                        targets.append(user_id)
+                        if max_length < len(current_session):
+                            max_length = len(current_session)
+                        current_session = [site_freq[data.iloc[i].site][0]]
+                        break
+                    else:
+                        current_session.append(site_freq[data.iloc[j].site][0])
+                else:
+                    sessions.append(current_session)
+                    targets.append(user_id)
+                    if max_length < len(current_session):
+                        max_length = len(current_session)
+                    current_session = []
+                    break
+                start_time = data.iloc[i].timestamp
+            else:
+                current_session.append(site_freq[data.iloc[i].site][0])
+
+        if current_session != []:
+            sessions.append(current_session)
+            targets.append(user_id)
+            if max_length < len(current_session):
+                max_length = len(current_session)
+        break
+
+    for i in range(len(sessions)):
+        sessions[i] = sessions[i] + [0 for i in range(max_length - len(sessions[i]))] + [targets[i]]
+
+    sessions = pd.DataFrame(sessions)
+    sessions.columns = ['site{}'.format(n) for n in range(1, max_length + 1)] + ['target']
+
+    return sessions
