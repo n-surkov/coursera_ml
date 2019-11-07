@@ -88,6 +88,7 @@ def make_csr_matrix(sessions, site_freq):
 
     return output[:, 1:]
 
+
 def prepare_sparse_train_set_window(path_to_csv_files, site_freq_path, session_length, window_size):
     '''
     Формирование массива сессий с пересечениями = длина сессии - ширина окна.
@@ -131,6 +132,7 @@ def prepare_sparse_train_set_window(path_to_csv_files, site_freq_path, session_l
     y = np.array(user_ids)
 
     return X, y
+
 
 def prepare_train_set_with_fe(path_to_csv_files, site_freq_path, feature_names,
                               session_length=10, window_size=10):
@@ -180,6 +182,119 @@ def prepare_train_set_with_fe(path_to_csv_files, site_freq_path, feature_names,
             target = user_id
 
             output.append(sites + times + [timespan, unique, start, day_of_week, target])
+
+    output = pd.DataFrame(output, dtype=int)
+    output.columns = feature_names
+
+    return output
+
+
+def prepare_train_set_with_fe_ext(path_to_csv_files, site_freq_path, feature_names=None,
+                                  session_length=10, window_size=10):
+    '''
+    Формирование DataFrame'a сессий с столбцами [site1, ..., site{session_length},
+    time_diff1, ..., time_diff{session_length - 1}, {...features...}, target]
+    здесь:
+    siteN -- индекс N-го сайта сессии
+    time_diffN -- разница вежду посещением N-го и (N+1)-го сайтов [сек]
+    Далее столбцы features следующие:
+        session_timespan -- продолжительность сессии [сек]
+        #unique_sites -- число уникальных сайтов в сессии
+        start_hour -- час начала сессии
+        day_of_week -- день недели начала сессии
+        timespan_median -- медианное значение продолжительности посещения сайта
+        timespan_mean -- среднее значение продолжительности посещения сайта
+        daily_aсtivity -- время суток начала сессии (0 -- [7-11], 1 -- [13-16], 2 -- [18-21], 4 -- остальные часы)
+        freq_facebook -- количество посещений www.facebook.com в сессии
+        timespan_youtube -- суммарное время посещения сайта youtube в сессии
+        timespan_mail -- суммарное время посещения сайта mail.google.com в сессии
+        freq_googlevideo -- количество посещений сайтов "*googlevideo*"
+        freq_google -- количество посещений "www.google.*"
+    target -- id пользователя
+
+    :param path_to_csv_files: путь к папке с .csv файлами пользователей
+    :param site_freq_path: путь к .pickle файлу со словарём файлов
+    :param feature_names: название столбцов формирующегося DataFrame'a
+    :param session_length: длина сессии
+    :param window_size: ширина окна непересекающейся части сессии
+    :return: pandas.DataFrame
+    '''
+    if feature_names is None:
+        feature_names = ['site' + str(i) for i in range(1, session_length + 1)] + \
+                        ['time_diff' + str(j) for j in range(1, session_length)] + \
+                        ['session_timespan', '#unique_sites', 'start_hour',
+                         'day_of_week', 'timespan_median', 'timespan_mean',
+                         'daily_aсtivity', 'freq_facebook', 'timespan_youtube',
+                         'timespan_mail', 'freq_googlevideo', 'freq_google',
+                         'target']
+
+    with open(site_freq_path, 'rb') as fo:
+        site_freq = pickle.load(fo)
+
+    facebook_idx = site_freq['www.facebook.com'][0]
+    youtube_idx = site_freq['s.youtube.com'][0]
+    mail_idxs = [site_freq[key][0] for key in site_freq.keys() if key.find('mail') > -1]
+    gvideo_idxs = [site_freq[key][0] for key in site_freq.keys() if key.find('googlevideo') > -1]
+    google_idxs = [site_freq[key][0] for key in site_freq.keys() if key.find('www.google.') > -1]
+
+    output = []
+    for path in glob(os.path.join(path_to_csv_files, '*.csv')):
+        data = pd.read_csv(path)
+        username, _ = os.path.splitext(os.path.basename(path))
+        user_id = int(username[-4:])
+
+        data_len = len(data)
+        for i in range(0, data_len, window_size):
+            last_index = min(data_len, i + session_length)
+            empty_data_len = i + session_length - last_index
+            sub_df = data.iloc[i:last_index]
+            sites = list(sub_df.site.apply(lambda x: site_freq[x][0])) + [0 for i in range(empty_data_len)]
+            timestamps = sub_df.timestamp.astype(np.datetime64)
+            times = [(timestamps.iloc[i+1] - timestamps.iloc[i]).total_seconds() for i in range(len(timestamps)-1)] + \
+                    [0 for i in range(empty_data_len)]
+            timespan = (timestamps.max() - timestamps.min()).total_seconds()
+            unique = (np.unique(sites) > 0).sum()
+            start = timestamps.min().hour
+            day_of_week = timestamps.min().dayofweek
+            timespan_median = np.median(times)
+            timespan_mean = np.mean(times)
+            if start >= 7 and start <= 11:
+                daily_activity = 0
+            elif start >= 13 and start <= 16:
+                daily_activity = 1
+            elif start >= 18 and start <= 21:
+                daily_activity = 3
+            else:
+                daily_activity = 4
+
+            freq_facebook = 0
+            timespan_youtube = 0
+            timespan_mail = 0
+            freq_googlevideo = 0
+            freq_google = 0
+            for i, site in enumerate(sites):
+                if site == facebook_idx:
+                    freq_facebook += 1
+                    continue
+                if site in gvideo_idxs:
+                    freq_googlevideo += 1
+                    continue
+                if site in google_idxs:
+                    freq_google += 1
+                if i < session_length - 1:
+                    if site == youtube_idx:
+                        timespan_youtube += times[i]
+                        continue
+                    if site in mail_idxs:
+                        timespan_mail += times[i]
+                        continue
+            target = user_id
+
+            output.append(sites + times + [timespan, unique, start, day_of_week,
+                                           timespan_median, timespan_mean, daily_activity,
+                                           freq_facebook, timespan_youtube, timespan_mail,
+                                           freq_googlevideo, freq_google,
+                                           target])
 
     output = pd.DataFrame(output, dtype=int)
     output.columns = feature_names
