@@ -7,70 +7,206 @@ from glob import glob
 import scipy.sparse
 import numpy as np
 import pickle
+import itertools
 
 
-def make_sessions_info(file_path, session_length):
+def read_sites_freq(path_to_csv_files):
     '''
-    Функция создания датафрейма пользовательских сессий
-    :param file_path: путь к файлу user????.csv с данными (timestamp, site)
-    :param session_length: длина сессии
-    :return: pd.DataFrame (site1, ..., siteN, user_id)
+    Чтение частот сайтов из файлов записи активности пользователей
+    :param path_to_csv_files: путь к файлам с записями
+    :return: словарь: {'site_name': [site_id, site_freq]}
     '''
-    data = pd.read_csv(file_path)
-    username, _ = os.path.splitext(os.path.basename(file_path))
-    user_id = int(username[-4:])
+    sites_counter = Counter()
+    for path in glob(os.path.join(path_to_csv_files, '*.csv')):
+        data = pd.read_csv(path)
+        sites_counter += Counter(data['site'])
 
-    user_freq = Counter(data['site'])
-
-    session_list = []
-    data_len = len(data)
-    for i in range(0, data_len, session_length):
-        last_index = min(data_len, i + session_length)
-        empty_data_len = i + session_length - last_index
-        df = data.iloc[i:last_index]
-        session_list.append(list(df['site']) + [0 for i in range(empty_data_len)] + [user_id])
-
-    return user_freq, session_list
+    return make_site_freq(sites_counter)
 
 
-def make_site_freq(counter):
+def make_site_freq(counter, sort_by_names=False):
     '''
     Создание словаря частот встречаемых сайтов
     :param counter: collections.Counter посещённых пользователями сайтов
     :return: словарь: {'site_string': [site_id, site_freq]}
     '''
-    site_freq_list = counter.most_common()
     site_freq_dict = {}
 
-    for i, pair in enumerate(site_freq_list):
-        site_freq_dict[pair[0]] = [i + 1, pair[1]]
+    if sort_by_names:
+        i = 0
+        for _, group in itertools.groupby(counter.most_common(), key=lambda x: x[1]):
+            for site, freq in sorted(group):
+                site_freq_dict[site] = [i + 1, freq]
+                i += 1
+    else:
+        site_freq_list = counter.most_common()
+        for i, pair in enumerate(site_freq_list):
+            site_freq_dict[pair[0]] = [i + 1, pair[1]]
 
     return site_freq_dict
 
 
-def prepare_train_set(path_to_csv_files, session_length=10):
+def make_column_names(session_length):
+    columns = ['site{}'.format(i) for i in range(1, session_length + 1)]
+    columns += ['time{}'.format(i) for i in range(1, session_length + 1)]
+    columns += ['user_id']
+    return columns
+
+
+def make_sessions_by_sites(user_info_path, site_freq_path, session_length, window_size=None):
     '''
-    Создание датафрейма сессий
-    :param path_to_csv_files: путь к файлам с информацией о пользователях
-    :param session_length: длина сессии
-    :return: DataFrame, в котором строки соответствуют уникальным (**не знаю к чему тут слово "уникальными",
-    просто все подряд сессии**) сессиям из *session_length* сайтов, *session_length* столбцов – индексам этих
-    *session_length* сайтов и последний столбец – ID пользователя
+    Чтение информации о пользователе с разбитием на сессии по количеству сайтов
+    :param user_info_path: путь к .csv файлу с сайтами, посещёнными пользователем
+    :param site_freq_path: путь к .pkl файлу с частотами посещаемости сайтов
+    :param session_length: длина сессии в сайтах
+    :param window_size: разница между началом соседних сессий в сайтах
+    :return: pandas.DataFrame ['site1', ..., 'site{session_length}, 'time1', ..., 'time{session_length}', 'user_id']
     '''
-    site_freq = Counter()
+    if window_size is None:
+        window_size = session_length
+
+    with open(site_freq_path, 'rb') as fo:
+        site_freq = pickle.load(fo)
+
+    username, _ = os.path.splitext(os.path.basename(user_info_path))
+    user_id = int(username[-4:])
+
+    data = pd.read_csv(user_info_path, parse_dates=['timestamp'])
+
+    data_len = len(data)
+
+    output_columns = make_column_names(session_length)
+
+    output_list = []
+
+    for i in range(0, data_len, window_size):
+        last_index = min(data_len, i + session_length)
+        empty_data_len = i + session_length - last_index
+        sites = data.iloc[i:last_index].site.apply(lambda x: site_freq[x][0])
+        timestamps = data.iloc[i:last_index].timestamp
+
+        output_list.append(list(sites) + [np.nan for i in range(empty_data_len)] +\
+                           list(timestamps) + [np.nan for i in range(empty_data_len)] +\
+                           [user_id])
+
+    output = pd.DataFrame(output_list)
+    output.columns = output_columns
+
+    return output
+
+
+def make_sessions_by_time(user_info_path, site_freq_path, session_timespan, session_length, window_size=None):
+    '''
+    Чтение информации о пользователе с разбитием на сессии:
+    длина сессии выбирается таким образом, чтобы она не превышала значения session_timespan в секундах и
+    значения session_length по количеству сайтов.
+    :param user_info_path: путь к .csv файлу с сайтами, посещёнными пользователем
+    :param site_freq_path: путь к .pkl файлу с частотами посещаемости сайтов
+    :param session_length: длина сессии в секундах
+    :param session_length: длина сессии в сайтах
+    :param window_size: разница между началом соседних сессий в секундах
+    :return: pandas.DataFrame ['site1', ..., 'site{session_length}, 'time1', ..., 'time{session_length}', 'user_id']
+    '''
+    if window_size is None:
+        window_size = session_timespan
+
+    with open(site_freq_path, 'rb') as fo:
+        site_freq = pickle.load(fo)
+
+    username, _ = os.path.splitext(os.path.basename(user_info_path))
+    user_id = int(username[-4:])
+
+    data = pd.read_csv(user_info_path, parse_dates=['timestamp'])
+
+    data_len = len(data)
+
+    output_columns = make_column_names(session_length)
+
     sessions = []
-    for path in glob(os.path.join(path_to_csv_files, '*.csv')):
-        current_freq, current_session = make_sessions_info(path, session_length)
-        site_freq += current_freq
-        sessions += current_session
 
-    sessions = pd.DataFrame(sessions)
-    sessions.columns = ['site{}'.format(i) for i in range(1, session_length + 1)] + ['user_id']
+    start_time = data.iloc[0].timestamp
+    current_session_sites = []
+    current_session_timestamps = []
+    for i in range(data_len):
+        current_inwin_site = site_freq[data.iloc[i].site][0]
+        current_inwin_time = data.iloc[i].timestamp
 
-    site_freq = make_site_freq(site_freq)
-    sessions = sessions.applymap(lambda x: site_freq[x][0] if isinstance(x, str) else x)
+        if (current_inwin_time - start_time).total_seconds() > window_size:
+            for j in range(i, data_len):
+                current_outwin_site = site_freq[data.iloc[j].site][0]
+                current_outwin_time = data.iloc[j].timestamp
+                if (current_outwin_time - start_time).total_seconds() > session_timespan or \
+                        len(current_session_sites) == session_length:
+                    empty_data_len = session_length - len(current_session_sites)
+                    sessions.append(current_session_sites + [np.nan for i in range(empty_data_len)] +
+                                    current_session_timestamps + [np.nan for i in range(empty_data_len)] +
+                                    [user_id])
 
-    return sessions, site_freq
+                    current_session_sites = [current_inwin_site]
+                    current_session_timestamps = [current_inwin_time]
+                    break
+                else:
+                    current_session_sites += [current_outwin_site]
+                    current_session_timestamps += [current_outwin_time]
+            else:
+                empty_data_len = session_length - len(current_session_sites)
+                sessions.append(current_session_sites + [np.nan for i in range(empty_data_len)] +
+                                current_session_timestamps + [np.nan for i in range(empty_data_len)] +
+                                [user_id])
+                current_session_sites = []
+                current_session_timestamps = []
+                break
+            start_time = current_inwin_time
+        else:
+            if len(current_session_sites) == session_length:
+                empty_data_len = session_length - len(current_session_sites)
+                sessions.append(current_session_sites + [np.nan for i in range(empty_data_len)] +
+                                current_session_timestamps + [np.nan for i in range(empty_data_len)] +
+                                [user_id])
+                current_session_sites = []
+                current_session_timestamps = []
+            else:
+                current_session_sites.append(current_inwin_site)
+                current_session_timestamps.append(current_inwin_time)
+
+    if current_session_sites != []:
+        empty_data_len = session_length - len(current_session_sites)
+        sessions.append(current_session_sites + [np.nan for i in range(empty_data_len)] +
+                        current_session_timestamps + [np.nan for i in range(empty_data_len)] +
+                        [user_id])
+
+    output = pd.DataFrame(sessions)
+    output.columns = output_columns
+
+    return output
+
+
+def prepare_train_set(path_to_csv_files, site_freq_path, session_length, session_timespan=None, window_size=None):
+    '''
+    Подготовка сессий по всем пользователям
+    :param path_to_csv_files: путь к папке с .csv файлами о пользователях
+    :param site_freq_path: путь к .pkl файлу с частотами посещений сайтов
+    :param session_length: максимальная длина сессии в сайтах
+    :param session_timespan: длина сессии в секундах. default=None
+    В случае None используется разбиение по сессиям make_sessions_by_sites()
+    Иначе используется разбиение по сессиям make_sessions_by_time()
+    :param window_size: разница между началом соседних сессий в сайтах (если session_timespan is None)
+    или в секундах (если session_timespan is not None)
+    :return: pandas.DataFrame ['site1', ..., 'site{session_length}, 'time1', ..., 'time{session_length}', 'user_id']
+    '''
+    output = pd.DataFrame(np.empty((0, 2 * session_length + 1)))
+    output.columns = make_column_names(session_length)
+    if session_timespan is None:
+        for path in glob(os.path.join(path_to_csv_files, '*.csv')):
+            current_user_data = make_sessions_by_sites(path, site_freq_path, session_length, window_size)
+            output = output.append(current_user_data, ignore_index=True)
+    else:
+        for path in glob(os.path.join(path_to_csv_files, '*.csv')):
+            current_user_data = make_sessions_by_time(path, site_freq_path, session_timespan,
+                                                      session_length, window_size)
+            output = output.append(current_user_data, ignore_index=True)
+
+    return output
 
 
 def make_csr_matrix(sessions, site_freq):
@@ -81,286 +217,33 @@ def make_csr_matrix(sessions, site_freq):
     :param site_freq: посещаемость всех сайтов во всех сессиях
     :return: scipy.sparce.csr_matrix
     '''
-    output = scipy.sparce.csr_matrix((len(sessions), len(site_freq) + 1), dtype=np.int)
+    row = []
+    col = []
+    data = []
     for i in range(len(sessions)):
-        c = Counter(sessions[i, :-1])
-        output[i, list(c)] += np.array(list(c.values()))
+        c = Counter(sessions[i])
+        row += [i for j in range(len(c))]
+        col += list(c)
+        data += list(c.values())
+
+    output = scipy.sparse.csr_matrix((data, (row, col)),
+                                     shape=(len(sessions), len(site_freq) + 1),
+                                     dtype=np.int)
 
     return output[:, 1:]
 
 
-def prepare_sparse_train_set_window(path_to_csv_files, site_freq_path, session_length, window_size):
-    '''
-    Формирование массива сессий с пересечениями = длина сессии - ширина окна.
-    :param path_to_csv_files: путь к папке с .csv файлами пользователей
-    :param site_freq_path: путь к .pickle файлу со словарём файлов
-    :param session_length: длина сессии
-    :param window_size: ширина окна непересекающейся части сессии
-    :return: scipy.sparse.csr_matrix -- сессии,
-             numpy.array -- id пользователя для каждой сессии
-    '''
-    with open(site_freq_path, 'rb') as fo:
-        site_freq = pickle.load(fo)
-    row = []
-    col = []
-    values = []
-    user_ids = []
-    current_row = 0
-    for path in glob(os.path.join(path_to_csv_files, '*.csv')):
-        data = pd.read_csv(path)
-        username, _ = os.path.splitext(os.path.basename(path))
-        user_id = int(username[-4:])
+if __name__ == '__main__':
+    PATH_TO_DATA = 'path'
+    for i in ['3', '10', '150']:
+        site_freq = read_sites_freq(os.path.join(PATH_TO_DATA, '{}users'.format(i)))
+        with open(os.path.join(PATH_TO_DATA, 'site_freq_{}users.pkl'.format(i)), 'wb') as fo:
+            pickle.dump(site_freq, fo)
+        train_data = prepare_train_set(os.path.join(PATH_TO_DATA, '{}users'.format(i)),
+                                       os.path.join(PATH_TO_DATA, 'site_freq_{}users.pkl'.format(i)),
+                                       session_length=10)
+        train_data.to_csv(os.path.join(PATH_TO_DATA,
+                                       'train_data_{}users.csv'.format(i)),
+                          index_label='session_id', float_format='%d')
 
-        data_len = len(data)
-        for i in range(0, data_len, window_size):
-            last_index = min(data_len, i + session_length)
-            empty_data_len = i + session_length - last_index
-            df = data.iloc[i:last_index].site.apply(lambda x: site_freq[x][0])
-
-            cnt = Counter(list(df) + [0 for i in range(empty_data_len)])
-            sites = list(cnt)
-            user_ids.append(user_id)
-            row += [current_row for i in range(len(sites))]
-            col += sites
-            values += [cnt[s] for s in sites]
-
-            current_row += 1
-
-    matrix_shape = (current_row, len(site_freq) + 1)
-
-    X = scipy.sparse.csr_matrix((values, (row, col)), shape=matrix_shape)[:, 1:]
-    y = np.array(user_ids)
-
-    return X, y
-
-
-def prepare_train_set_with_fe(path_to_csv_files, site_freq_path, feature_names,
-                              session_length=10, window_size=10):
-    '''
-    Формирование DataFrame'a сессий с столбцами [site1, ..., site{session_length},
-    time_diff1, ..., time_diff{session_length - 1}, timespan, unique, start, day_of_week, target]
-    здесь:
-    siteN -- индекс N-го сайта сессии
-    time_diffN -- разница вежду посещением N-го и (N+1)-го сайтов [сек]
-    timespan -- продолжительность сессии [сек]
-    unique -- число уникальных сайтов в сессии
-    start -- час начала сессии
-    day_of_week -- день недели
-    target -- id пользователя
-    :param path_to_csv_files: путь к папке с .csv файлами пользователей
-    :param site_freq_path: путь к .pickle файлу со словарём файлов
-    :param feature_names: название столбцов формирующегося DataFrame'a
-    :param session_length: длина сессии
-    :param window_size: ширина окна непересекающейся части сессии
-    :return: pandas.DataFrame
-    '''
-    if len(feature_names) != (2 * session_length - 1 + 5):
-        raise ValueError('length of feature_names must be equal to 2 * session_length - 1 + 5')
-
-    with open(site_freq_path, 'rb') as fo:
-        site_freq = pickle.load(fo)
-
-    output = []
-    for path in glob(os.path.join(path_to_csv_files, '*.csv')):
-        data = pd.read_csv(path)
-        username, _ = os.path.splitext(os.path.basename(path))
-        user_id = int(username[-4:])
-
-        data_len = len(data)
-        for i in range(0, data_len, window_size):
-            last_index = min(data_len, i + session_length)
-            empty_data_len = i + session_length - last_index
-            sub_df = data.iloc[i:last_index]
-            sites = list(sub_df.site.apply(lambda x: site_freq[x][0])) + [0 for i in range(empty_data_len)]
-            timestamps = sub_df.timestamp.astype(np.datetime64)
-            times = [(timestamps.iloc[i+1] - timestamps.iloc[i]).total_seconds() for i in range(len(timestamps)-1)] + \
-                    [0 for i in range(empty_data_len)]
-            timespan = (timestamps.max() - timestamps.min()).total_seconds()
-            unique = (np.unique(sites) > 0).sum()
-            start = timestamps.min().hour
-            day_of_week = timestamps.min().dayofweek
-            target = user_id
-
-            output.append(sites + times + [timespan, unique, start, day_of_week, target])
-
-    output = pd.DataFrame(output, dtype=int)
-    output.columns = feature_names
-
-    return output
-
-
-def prepare_train_set_with_fe_ext(path_to_csv_files, site_freq_path, feature_names=None,
-                                  session_length=10, window_size=10):
-    '''
-    Формирование DataFrame'a сессий с столбцами [site1, ..., site{session_length},
-    time_diff1, ..., time_diff{session_length - 1}, {...features...}, target]
-    здесь:
-    siteN -- индекс N-го сайта сессии
-    time_diffN -- разница вежду посещением N-го и (N+1)-го сайтов [сек]
-    Далее столбцы features следующие:
-        session_timespan -- продолжительность сессии [сек]
-        #unique_sites -- число уникальных сайтов в сессии
-        start_hour -- час начала сессии
-        day_of_week -- день недели начала сессии
-        timespan_median -- медианное значение продолжительности посещения сайта
-        timespan_mean -- среднее значение продолжительности посещения сайта
-        daily_aсtivity -- время суток начала сессии (0 -- [7-11], 1 -- [13-16], 2 -- [18-21], 4 -- остальные часы)
-        freq_facebook -- количество посещений www.facebook.com в сессии
-        timespan_youtube -- суммарное время посещения сайта youtube в сессии
-        timespan_mail -- суммарное время посещения сайта mail.google.com в сессии
-        freq_googlevideo -- количество посещений сайтов "*googlevideo*"
-        freq_google -- количество посещений "www.google.*"
-    target -- id пользователя
-
-    :param path_to_csv_files: путь к папке с .csv файлами пользователей
-    :param site_freq_path: путь к .pickle файлу со словарём файлов
-    :param feature_names: название столбцов формирующегося DataFrame'a
-    :param session_length: длина сессии
-    :param window_size: ширина окна непересекающейся части сессии
-    :return: pandas.DataFrame
-    '''
-    if feature_names is None:
-        feature_names = ['site' + str(i) for i in range(1, session_length + 1)] + \
-                        ['time_diff' + str(j) for j in range(1, session_length)] + \
-                        ['session_timespan', '#unique_sites', 'start_hour',
-                         'day_of_week', 'timespan_median', 'timespan_mean',
-                         'daily_aсtivity', 'freq_facebook', 'timespan_youtube',
-                         'timespan_mail', 'freq_googlevideo', 'freq_google',
-                         'target']
-
-    with open(site_freq_path, 'rb') as fo:
-        site_freq = pickle.load(fo)
-
-    facebook_idx = site_freq['www.facebook.com'][0]
-    youtube_idx = site_freq['s.youtube.com'][0]
-    mail_idxs = [site_freq[key][0] for key in site_freq.keys() if key.find('mail') > -1]
-    gvideo_idxs = [site_freq[key][0] for key in site_freq.keys() if key.find('googlevideo') > -1]
-    google_idxs = [site_freq[key][0] for key in site_freq.keys() if key.find('www.google.') > -1]
-
-    output = []
-    for path in glob(os.path.join(path_to_csv_files, '*.csv')):
-        data = pd.read_csv(path)
-        username, _ = os.path.splitext(os.path.basename(path))
-        user_id = int(username[-4:])
-
-        data_len = len(data)
-        for i in range(0, data_len, window_size):
-            last_index = min(data_len, i + session_length)
-            empty_data_len = i + session_length - last_index
-            sub_df = data.iloc[i:last_index]
-            sites = list(sub_df.site.apply(lambda x: site_freq[x][0])) + [0 for i in range(empty_data_len)]
-            timestamps = sub_df.timestamp.astype(np.datetime64)
-            times = [(timestamps.iloc[i+1] - timestamps.iloc[i]).total_seconds() for i in range(len(timestamps)-1)] + \
-                    [0 for i in range(empty_data_len)]
-            timespan = (timestamps.max() - timestamps.min()).total_seconds()
-            unique = (np.unique(sites) > 0).sum()
-            start = timestamps.min().hour
-            day_of_week = timestamps.min().dayofweek
-            timespan_median = np.median(times)
-            timespan_mean = np.mean(times)
-            if start >= 7 and start <= 11:
-                daily_activity = 0
-            elif start >= 13 and start <= 16:
-                daily_activity = 1
-            elif start >= 18 and start <= 21:
-                daily_activity = 3
-            else:
-                daily_activity = 4
-
-            freq_facebook = 0
-            timespan_youtube = 0
-            timespan_mail = 0
-            freq_googlevideo = 0
-            freq_google = 0
-            for i, site in enumerate(sites):
-                if site == facebook_idx:
-                    freq_facebook += 1
-                    continue
-                if site in gvideo_idxs:
-                    freq_googlevideo += 1
-                    continue
-                if site in google_idxs:
-                    freq_google += 1
-                if i < session_length - 1:
-                    if site == youtube_idx:
-                        timespan_youtube += times[i]
-                        continue
-                    if site in mail_idxs:
-                        timespan_mail += times[i]
-                        continue
-            target = user_id
-
-            output.append(sites + times + [timespan, unique, start, day_of_week,
-                                           timespan_median, timespan_mean, daily_activity,
-                                           freq_facebook, timespan_youtube, timespan_mail,
-                                           freq_googlevideo, freq_google,
-                                           target])
-
-    output = pd.DataFrame(output, dtype=int)
-    output.columns = feature_names
-
-    return output
-
-
-def prepare_train_set_time_window(path_to_csv_files, site_freq_path, session_length, window_size):
-    '''
-    Формирование массива сессий с пересечениями = длина сессии - ширина окна.
-    При этом длиной сессии считается разница между посещением первого и последнего сайта сессии
-    :param path_to_csv_files: путь к папке с .csv файлами пользователей
-    :param site_freq_path: путь к .pickle файлу со словарём файлов
-    :param session_length: длина сессии в секундах
-    :param window_size: ширина окна непересекающейся части сессии в секундах
-    :return: DataFrame со столбцами [site1, ..., siteN, target], где N -- максимальная длина сессии
-    '''
-    with open(site_freq_path, 'rb') as fo:
-        site_freq = pickle.load(fo)
-
-    sessions = []
-    targets = []
-    max_length = 0
-    for path in glob(os.path.join(path_to_csv_files, '*.csv')):
-        data = pd.read_csv(path)
-        data.timestamp = data.timestamp.astype(np.datetime64)
-        username, _ = os.path.splitext(os.path.basename(path))
-        user_id = int(username[-4:])
-
-        start_time = data.iloc[0].timestamp
-        data_len = len(data)
-        current_session = []
-        for i in range(data_len):
-            if (data.iloc[i].timestamp - start_time).total_seconds() > window_size:
-                for j in range(i, data_len):
-                    if (data.iloc[j].timestamp - start_time).total_seconds() > session_length:
-                        sessions.append(current_session)
-                        targets.append(user_id)
-                        if max_length < len(current_session):
-                            max_length = len(current_session)
-                        current_session = [site_freq[data.iloc[i].site][0]]
-                        break
-                    else:
-                        current_session.append(site_freq[data.iloc[j].site][0])
-                else:
-                    sessions.append(current_session)
-                    targets.append(user_id)
-                    if max_length < len(current_session):
-                        max_length = len(current_session)
-                    current_session = []
-                    break
-                start_time = data.iloc[i].timestamp
-            else:
-                current_session.append(site_freq[data.iloc[i].site][0])
-
-        if current_session != []:
-            sessions.append(current_session)
-            targets.append(user_id)
-            if max_length < len(current_session):
-                max_length = len(current_session)
-        break
-
-    for i in range(len(sessions)):
-        sessions[i] = sessions[i] + [0 for i in range(max_length - len(sessions[i]))] + [targets[i]]
-
-    sessions = pd.DataFrame(sessions)
-    sessions.columns = ['site{}'.format(n) for n in range(1, max_length + 1)] + ['target']
-
-    return sessions
+        print('sessions for {} users are prepared'.format(i))
