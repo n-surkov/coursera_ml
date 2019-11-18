@@ -260,6 +260,133 @@ def make_csr_matrix(sessions, site_freq):
     return output[:, 1:]
 
 
+def extend_session_features(sites, timestamps, user_id, site_freq, features):
+    '''
+    Формирование сессии с новыми фичами с столбцами [site1, ..., site{session_length},
+    time_diff1, ..., time_diff{session_length - 1}, {...features...}, target]
+    здесь:
+    siteN -- индекс N-го сайта сессии
+    time_diffN -- разница вежду посещением N-го и (N+1)-го сайтов [сек]
+    Далее столбцы features следующие:
+        session_timespan -- продолжительность сессии [сек]
+        #unique_sites -- число уникальных сайтов в сессии
+        start_hour -- час начала сессии
+        day_of_week -- день недели начала сессии
+        timespan_median -- медианное значение продолжительности посещения сайта
+        timespan_mean -- среднее значение продолжительности посещения сайта
+        daily_aсtivity -- время суток начала сессии (0 -- [7-11], 1 -- [13-16], 2 -- [18-21], 4 -- остальные часы)
+        freq_facebook -- количество посещений www.facebook.com в сессии
+        timespan_youtube -- суммарное время посещения сайта youtube в сессии
+        timespan_mail -- суммарное время посещения сайта mail.google.com в сессии
+        freq_googlevideo -- количество посещений сайтов "*googlevideo*"
+        freq_google -- количество посещений "www.google.*"
+    target -- id пользователя
+
+    :param path_to_csv_files: путь к папке с .csv файлами пользователей
+    :param site_freq_path: путь к .pickle файлу со словарём файлов
+    :param feature_names: название столбцов формирующегося DataFrame'a
+    :param session_length: длина сессии
+    :param window_size: ширина окна непересекающейся части сессии
+    :return: pandas.DataFrame
+    '''
+    facebook_idx = site_freq['www.facebook.com'][0]
+    youtube_idx = site_freq['s.youtube.com'][0]
+    mail_idxs = [site_freq[key][0] for key in site_freq.keys() if key.find('mail') > -1]
+    gvideo_idxs = [site_freq[key][0] for key in site_freq.keys() if key.find('googlevideo') > -1]
+    google_idxs = [site_freq[key][0] for key in site_freq.keys() if key.find('www.google.') > -1]
+
+    output = list(sites)
+    times = timestamps.diff().apply(lambda x: x.total_seconds()).fillna(0)
+    output += list(times)
+    features_columns = ['site{}'.format(i) for i in range(1, len(sites) + 1)]
+    features_columns += ['time{}'.format(i) for i in range(1, len(sites))]
+    start = timestamps.min().hour
+
+    if 'session_timespan' in features:
+        features_columns.append('session_timespan')
+        output.append((timestamps.max() - timestamps.min()).total_seconds())
+
+    if '#unique_sites' in features:
+        features_columns.append('#unique_sites')
+        output.append((np.unique(sites) > 0).sum())
+
+    if 'start_hour' in features:
+        features_columns.append('start_hour')
+        output.append(start)
+
+    if 'day_of_week' in features:
+        features_columns.append('day_of_week')
+        output.append(timestamps.min().dayofweek)
+
+    if 'timespan_median' in features:
+        features_columns.append('timespan_median')
+        output.append(np.median(times))
+
+    if 'timespan_mean' in features:
+        features_columns.append('timespan_mean')
+        output.append(np.mean(times))
+
+    if 'daily_aсtivity' in features:
+        features_columns.append('daily_aсtivity')
+        if start >= 7 and start <= 11:
+            output.append(0)
+        elif start >= 13 and start <= 16:
+            output.append(1)
+        elif start >= 18 and start <= 21:
+            output.append(3)
+        else:
+            output.append(4)
+
+    freq_facebook = 0
+    timespan_youtube = 0
+    timespan_mail = 0
+    freq_googlevideo = 0
+    freq_google = 0
+    for i, site in enumerate(sites):
+        if site == facebook_idx:
+            freq_facebook += 1
+            continue
+        if site in gvideo_idxs:
+            freq_googlevideo += 1
+            continue
+        if site in google_idxs:
+            freq_google += 1
+        if i < session_length - 1:
+            if site == youtube_idx:
+                timespan_youtube += times[i]
+                continue
+            if site in mail_idxs:
+                timespan_mail += times[i]
+                continue
+
+    if 'freq_facebook' in features:
+        features_columns.append('freq_facebook')
+        output.append(freq_facebook)
+
+    if 'timespan_youtube' in features:
+        features_columns.append('timespan_youtube')
+        output.append(timespan_youtube)
+
+    if 'timespan_mail' in features:
+        features_columns.append('timespan_mail')
+        output.append(timespan_mail)
+
+    if 'freq_googlevideo' in features:
+        features_columns.append('freq_googlevideo')
+        output.append(freq_googlevideo)
+
+    if 'freq_google' in features:
+        features_columns.append('freq_google')
+        output.append(freq_google)
+
+    features_columns.append('user_id')
+    output.append(user_id)
+
+    output = pd.DataFrame(output)
+    output.columns = features_columns
+    return output
+
+
 if __name__ == '__main__':
     import argparse
 
@@ -289,14 +416,14 @@ if __name__ == '__main__':
             train_data = prepare_train_set(os.path.join(PATH_TO_DATA, '{}users'.format(i)),
                                            os.path.join(PATH_TO_DATA, 'site_freq_{}users.pkl'.format(i)),
                                            session_length=10)
-            train_data.to_csv(os.path.join(PATH_TO_DATA,
-                                           'train_data_{}users.csv'.format(i)),
-                              index_label='session_id', float_format='%d')
+
             # Разреженные матрицы для сессий из 10 сайтов
             X = train_data.fillna(0).iloc[:, :(-1 - 10)].values
             y = train_data.iloc[:, -1].values.astype(int)
             X_sparse = make_csr_matrix(X, site_freq)
 
+            with open(os.path.join(PATH_TO_DATA, 'sessions_{}users.pkl'.format(i)), 'wb') as fo:
+                pickle.dump(train_data, fo)
             with open(os.path.join(PATH_TO_DATA, 'site_freq_{}users.pkl'.format(i)), 'wb') as fo:
                 pickle.dump(site_freq, fo)
             with open(os.path.join(PATH_TO_DATA, 'X_sparse_{}users.pkl'.format(i)), 'wb') as fo:
@@ -328,10 +455,9 @@ if __name__ == '__main__':
                     # y = train_set.iloc[:, -1].values.astype(int)
                     # X_sparse = make_csr_matrix(X, site_freq)
 
-                    filename = 'X_sparse_{}users_s{}_w{}.csv'.format(num_users, session_length, window_size)
-                    train_set.to_csv(os.path.join(PATH_TO_DATA,
-                                                  'train_data_3users.csv'),
-                                     index_label='session_id', float_format='%d')
+                    filename = 'sessions_{}users_s{}_w{}.pkl'.format(num_users, session_length, window_size)
+                    with open(os.path.join(PATH_TO_DATA, filename), 'wb') as fo:
+                        pickle.dump(train_set, fo)
                     # filename = 'X_sparse_{}users_s{}_w{}.pkl'.format(num_users, session_length, window_size)
                     # with open(os.path.join(PATH_TO_DATA, filename), 'wb') as fo:
                     #     pickle.dump(X_sparse, fo)
