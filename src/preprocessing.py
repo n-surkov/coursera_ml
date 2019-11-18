@@ -181,7 +181,7 @@ def make_sessions_by_time(user_info_path, site_freq_path, session_timespan, sess
     return output
 
 
-def prepare_train_set(path_to_csv_files, site_freq_path, session_length, session_timespan=None, window_size=None):
+def prepare_train_set(path_to_csv_files, site_freq_path, session_length=10, session_timespan=None, window_size=None):
     '''
     Подготовка сессий по всем пользователям
     :param path_to_csv_files: путь к папке с .csv файлами о пользователях
@@ -209,6 +209,33 @@ def prepare_train_set(path_to_csv_files, site_freq_path, session_length, session
     return output
 
 
+def prepare_sparse_train_set(path_to_csv_files, site_freq_path, session_length=10,
+                             session_timespan=None, window_size=None):
+    '''
+    Подготовка сессий по всем пользователям
+    :param path_to_csv_files: путь к папке с .csv файлами о пользователях
+    :param site_freq_path: путь к .pkl файлу с частотами посещений сайтов
+    :param session_length: максимальная длина сессии в сайтах
+    :param session_timespan: длина сессии в секундах. default=None
+    В случае None используется разбиение по сессиям make_sessions_by_sites()
+    Иначе используется разбиение по сессиям make_sessions_by_time()
+    :param window_size: разница между началом соседних сессий в сайтах (если session_timespan is None)
+    или в секундах (если session_timespan is not None)
+    :return: разреженная матрица сессий, id пользователей по сессиям
+    '''
+    with open(site_freq_path, 'rb') as fo:
+        site_freq = pickle.load(fo)
+
+    train_set = prepare_train_set(path_to_csv_files, site_freq_path, session_length,
+                                  session_timespan, window_size)
+
+    X = train_set.fillna(0).iloc[:, :(-1 - session_length)].values
+    y = train_set.iloc[:, -1].values.astype(int)
+    X_sparse = make_csr_matrix(X, site_freq)
+
+    return X_sparse, y
+
+
 def make_csr_matrix(sessions, site_freq):
     '''
     Создание разряженной матрицы количества посещений сайтов за сессию.
@@ -234,16 +261,81 @@ def make_csr_matrix(sessions, site_freq):
 
 
 if __name__ == '__main__':
-    PATH_TO_DATA = 'path'
-    for i in ['3', '10', '150']:
-        site_freq = read_sites_freq(os.path.join(PATH_TO_DATA, '{}users'.format(i)))
-        with open(os.path.join(PATH_TO_DATA, 'site_freq_{}users.pkl'.format(i)), 'wb') as fo:
-            pickle.dump(site_freq, fo)
-        train_data = prepare_train_set(os.path.join(PATH_TO_DATA, '{}users'.format(i)),
-                                       os.path.join(PATH_TO_DATA, 'site_freq_{}users.pkl'.format(i)),
-                                       session_length=10)
-        train_data.to_csv(os.path.join(PATH_TO_DATA,
-                                       'train_data_{}users.csv'.format(i)),
-                          index_label='session_id', float_format='%d')
+    import argparse
 
-        print('sessions for {} users are prepared'.format(i))
+    src_folder = os.path.join('.', '..', 'data', 'capstone_user_identification')
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('stages', nargs='?', default='all', help='preprocessing stages')
+    parser.add_argument('data_path', nargs='?', default=src_folder, help='directory with sessions')
+
+    args = parser.parse_args()
+
+    PATH_TO_DATA = args.data_path
+    if args.stages == 'all':
+        ppstages = [i for i in range(3)]
+    else:
+        ppstages = [int(args.stages)]
+
+    if 1 in ppstages:
+        # Предобработка первой недели.
+        # Поиск частот посещений сайтов
+        # Составление сессий по 10 сайтов
+        # Составление разреженных матриц для сессий по 10 сайтов
+        for i in ['3', '10', '150']:
+            # Частоты сайтов
+            site_freq = read_sites_freq(os.path.join(PATH_TO_DATA, '{}users'.format(i)))
+            # сессии по 10 сайтов
+            train_data = prepare_train_set(os.path.join(PATH_TO_DATA, '{}users'.format(i)),
+                                           os.path.join(PATH_TO_DATA, 'site_freq_{}users.pkl'.format(i)),
+                                           session_length=10)
+            train_data.to_csv(os.path.join(PATH_TO_DATA,
+                                           'train_data_{}users.csv'.format(i)),
+                              index_label='session_id', float_format='%d')
+            # Разреженные матрицы для сессий из 10 сайтов
+            X = train_data.fillna(0).iloc[:, :(-1 - 10)].values
+            y = train_data.iloc[:, -1].values.astype(int)
+            X_sparse = make_csr_matrix(X, site_freq)
+
+            with open(os.path.join(PATH_TO_DATA, 'site_freq_{}users.pkl'.format(i)), 'wb') as fo:
+                pickle.dump(site_freq, fo)
+            with open(os.path.join(PATH_TO_DATA, 'X_sparse_{}users.pkl'.format(i)), 'wb') as fo:
+                pickle.dump(X_sparse, fo, protocol=2)
+            with open(os.path.join(PATH_TO_DATA, 'y_{}users.pkl'.format(i)), 'wb') as fo:
+                pickle.dump(y, fo, protocol=2)
+
+            print('week 1 sessions for {} users are prepared'.format(i))
+
+    if 2 in ppstages:
+        # Предобработка второй недели
+        # Составление разреженных матриц сессий с различными параметрами (ширина окна и длина сессии)
+        # для 10 и 150 пользователей
+        for num_users in [10, 150]:
+            for window_size, session_length in itertools.product([10, 7, 5], [15, 10, 7, 5]):
+                if window_size <= session_length and (window_size, session_length) != (10, 10):
+                    print('pricessing {} users with {} session length and {} window size'.format(num_users,
+                                                                                                 session_length,
+                                                                                                 window_size))
+                    with open(os.path.join(PATH_TO_DATA, 'site_freq_{}users.pkl'.format(num_users)), 'rb') as fo:
+                        site_freq = pickle.load(fo)
+
+                    train_set = prepare_train_set(os.path.join(PATH_TO_DATA, '{}users'.format(num_users)),
+                                                  os.path.join(PATH_TO_DATA,
+                                                               'site_freq_{}users.pkl'.format(num_users)),
+                                                  session_length=session_length, window_size=window_size)
+
+                    # X = train_set.fillna(0).iloc[:, :(-1 - session_length)].values
+                    # y = train_set.iloc[:, -1].values.astype(int)
+                    # X_sparse = make_csr_matrix(X, site_freq)
+
+                    filename = 'X_sparse_{}users_s{}_w{}.csv'.format(num_users, session_length, window_size)
+                    train_set.to_csv(os.path.join(PATH_TO_DATA,
+                                                  'train_data_3users.csv'),
+                                     index_label='session_id', float_format='%d')
+                    # filename = 'X_sparse_{}users_s{}_w{}.pkl'.format(num_users, session_length, window_size)
+                    # with open(os.path.join(PATH_TO_DATA, filename), 'wb') as fo:
+                    #     pickle.dump(X_sparse, fo)
+                    # filename = 'y_{}users_s{}_w{}.pkl'.format(num_users, session_length, window_size)
+                    # with open(os.path.join(PATH_TO_DATA, filename), 'wb') as fo:
+                    #     pickle.dump(y, fo)
+
