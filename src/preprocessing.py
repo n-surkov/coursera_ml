@@ -260,9 +260,56 @@ def make_csr_matrix(sessions, site_freq):
     return output[:, 1:]
 
 
-def extend_session_features(sites, timestamps, user_id, site_freq, features):
+def make_fe_dtype(features, session_length):
+    dtype = [('site{}'.format(i), int) for i in range(1, session_length + 1)]
+    dtype += [('time_diff{}'.format(i), int) for i in range(1, session_length)]
+
+    if 'session_timespan' in features:
+        dtype.append(('session_timespan', int))
+
+    if '#unique_sites' in features:
+        dtype.append(('#unique_sites', int))
+
+    if 'start_hour' in features:
+        dtype.append(('start_hour', int))
+
+    if 'day_of_week' in features:
+        dtype.append(('day_of_week', int))
+
+    if 'timespan_median' in features:
+        dtype.append(('timespan_median', float))
+
+    if 'timespan_mean' in features:
+        dtype.append(('timespan_mean', float))
+
+    if 'daily_aсtivity' in features:
+        dtype.append(('daily_aсtivity', int))
+
+    if 'freq_facebook' in features:
+        dtype.append(('freq_facebook', int))
+
+    if 'timespan_youtube' in features:
+        dtype.append(('timespan_youtube', int))
+
+    if 'timespan_mail' in features:
+        dtype.append(('timespan_mail', int))
+
+    if 'freq_googlevideo' in features:
+        dtype.append(('freq_googlevideo', int))
+
+    if 'freq_google' in features:
+        dtype.append(('freq_google', int))
+
+    dtype.append(('target', int))
+
+    return dtype
+
+
+def prepare_train_set_fe(path_to_sessions, site_freq_path, feature_names):
     '''
-    Формирование сессии с новыми фичами с столбцами [site1, ..., site{session_length},
+    Формирование сессий с новыми фичами.
+    столбцы:
+    [site1, ..., site{session_length},
     time_diff1, ..., time_diff{session_length - 1}, {...features...}, target]
     здесь:
     siteN -- индекс N-го сайта сессии
@@ -289,102 +336,82 @@ def extend_session_features(sites, timestamps, user_id, site_freq, features):
     :param window_size: ширина окна непересекающейся части сессии
     :return: pandas.DataFrame
     '''
+    with open(path_to_sessions, 'rb') as fo:
+        sessions = pickle.load(fo)
+
+    with open(site_freq_path, 'rb') as fo:
+        site_freq = pickle.load(fo)
+
     facebook_idx = site_freq['www.facebook.com'][0]
     youtube_idx = site_freq['s.youtube.com'][0]
     mail_idxs = [site_freq[key][0] for key in site_freq.keys() if key.find('mail') > -1]
     gvideo_idxs = [site_freq[key][0] for key in site_freq.keys() if key.find('googlevideo') > -1]
     google_idxs = [site_freq[key][0] for key in site_freq.keys() if key.find('www.google.') > -1]
 
-    output = list(sites)
-    times = timestamps.diff().apply(lambda x: x.total_seconds()).fillna(0)
-    output += list(times)
-    features_columns = ['site{}'.format(i) for i in range(1, len(sites) + 1)]
-    features_columns += ['time{}'.format(i) for i in range(1, len(sites))]
-    start = timestamps.min().hour
+    sites = sessions[[col for col in sessions.columns if col.find('site') == 0]].fillna(0)
+    output = np.zeros((len(sessions),), dtype=make_fe_dtype(feature_names, sites.shape[1]))
 
-    if 'session_timespan' in features:
-        features_columns.append('session_timespan')
-        output.append((timestamps.max() - timestamps.min()).total_seconds())
+    for i in range(sites.shape[1]):
+        output['site{}'.format(i + 1)] = sites.iloc[:, i].to_numpy()
 
-    if '#unique_sites' in features:
-        features_columns.append('#unique_sites')
-        output.append((np.unique(sites) > 0).sum())
+    timestamps = sessions[[col for col in sessions.columns if col.find('time') == 0]]
+    targets = sessions.user_id
 
-    if 'start_hour' in features:
-        features_columns.append('start_hour')
-        output.append(start)
+    time_deltas = np.zeros((timestamps.shape[0], timestamps.shape[1] - 1), dtype=int)
+    for i in range(1, timestamps.shape[1]):
+        time_deltas[:, i - 1] = (timestamps.iloc[:, i] - timestamps.iloc[:, i - 1]).apply(lambda x: x.total_seconds()).fillna(0).to_numpy()
+        output['time_diff{}'.format(i)] = time_deltas[:, i - 1]
 
-    if 'day_of_week' in features:
-        features_columns.append('day_of_week')
-        output.append(timestamps.min().dayofweek)
+    start = timestamps.min(axis=1).apply(lambda x: x.hour)
 
-    if 'timespan_median' in features:
-        features_columns.append('timespan_median')
-        output.append(np.median(times))
+    if 'session_timespan' in feature_names:
+        output['session_timespan'] = (timestamps.max(axis=1) - timestamps.min(axis=1)).apply(lambda x: x.total_seconds()).to_numpy()
 
-    if 'timespan_mean' in features:
-        features_columns.append('timespan_mean')
-        output.append(np.mean(times))
+    if '#unique_sites' in feature_names:
+        output['#unique_sites'] = sessions[[col for col in sessions.columns if col.find('site') == 0]].nunique(axis=1)
 
-    if 'daily_aсtivity' in features:
-        features_columns.append('daily_aсtivity')
-        if start >= 7 and start <= 11:
-            output.append(0)
-        elif start >= 13 and start <= 16:
-            output.append(1)
-        elif start >= 18 and start <= 21:
-            output.append(3)
-        else:
-            output.append(4)
+    if 'start_hour' in feature_names:
+        output['start_hour'] = start.to_numpy()
 
-    freq_facebook = 0
-    timespan_youtube = 0
-    timespan_mail = 0
-    freq_googlevideo = 0
-    freq_google = 0
-    for i, site in enumerate(sites):
-        if site == facebook_idx:
-            freq_facebook += 1
-            continue
-        if site in gvideo_idxs:
-            freq_googlevideo += 1
-            continue
-        if site in google_idxs:
-            freq_google += 1
-        if i < session_length - 1:
-            if site == youtube_idx:
-                timespan_youtube += times[i]
-                continue
-            if site in mail_idxs:
-                timespan_mail += times[i]
-                continue
+    if 'day_of_week' in feature_names:
+        output['day_of_week'] = timestamps.min(axis=1).apply(lambda x: x.dayofweek).to_numpy()
 
-    if 'freq_facebook' in features:
-        features_columns.append('freq_facebook')
-        output.append(freq_facebook)
+    if 'timespan_median' in feature_names:
+        output['timespan_median'] = np.median(time_deltas, axis=1)
 
-    if 'timespan_youtube' in features:
-        features_columns.append('timespan_youtube')
-        output.append(timespan_youtube)
+    if 'timespan_mean' in feature_names:
+        output['timespan_mean'] = np.mean(time_deltas, axis=1)
 
-    if 'timespan_mail' in features:
-        features_columns.append('timespan_mail')
-        output.append(timespan_mail)
+    if 'daily_aсtivity' in feature_names:
+        da = np.full((len(sessions), ), 4)
+        da[np.logical_and(start >= 7, start <= 11)] = 0
+        da[np.logical_and(start >= 13, start <= 16)] = 1
+        da[np.logical_and(start >= 18, start <= 21)] = 3
 
-    if 'freq_googlevideo' in features:
-        features_columns.append('freq_googlevideo')
-        output.append(freq_googlevideo)
+    if 'freq_facebook' in feature_names:
+        output['freq_facebook'] = (sites == facebook_idx).sum(axis=1).to_numpy()
 
-    if 'freq_google' in features:
-        features_columns.append('freq_google')
-        output.append(freq_google)
+    if 'freq_googlevideo' in feature_names:
+        for idx in gvideo_idxs:
+            output['freq_googlevideo'] += (sites == idx).sum(axis=1).to_numpy()
 
-    features_columns.append('user_id')
-    output.append(user_id)
+    if 'freq_google' in feature_names:
+        for idx in google_idxs:
+            output['freq_google'] += (sites == idx).sum(axis=1).to_numpy()
 
-    output = pd.DataFrame(output)
-    output.columns = features_columns
-    return output
+    # if 'timespan_youtube' in feature_names:
+    #     print(time_deltas.shape)
+    #     print((sites == youtube_idx).iloc[:, :-1].shape)
+    #     print(time_deltas[(sites == youtube_idx).iloc[:, :-1]].shape)
+    #     output['timespan_youtube'] = time_deltas[(sites == youtube_idx).iloc[:, :-1]].sum(axis=1)
+    #
+    # if 'timespan_mail' in feature_names:
+    #     for idx in mail_idxs:
+    #         output['timespan_mail'] = time_deltas[(sites == idx).iloc[:, :-1]].sum(axis=1)
+
+    output['target'] = targets.to_numpy()
+
+    return pd.DataFrame(output)
 
 
 if __name__ == '__main__':
@@ -423,7 +450,7 @@ if __name__ == '__main__':
             X_sparse = make_csr_matrix(X, site_freq)
 
             with open(os.path.join(PATH_TO_DATA, 'sessions_{}users.pkl'.format(i)), 'wb') as fo:
-                pickle.dump(train_data, fo)
+                pickle.dump(train_data, fo, protocol=2)
             with open(os.path.join(PATH_TO_DATA, 'site_freq_{}users.pkl'.format(i)), 'wb') as fo:
                 pickle.dump(site_freq, fo)
             with open(os.path.join(PATH_TO_DATA, 'X_sparse_{}users.pkl'.format(i)), 'wb') as fo:
