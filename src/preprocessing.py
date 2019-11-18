@@ -451,17 +451,17 @@ if __name__ == '__main__':
                                                                'site_freq_{}users.pkl'.format(num_users)),
                                                   session_length=session_length, window_size=window_size)
 
-                    # X = train_set.fillna(0).iloc[:, :(-1 - session_length)].values
-                    # y = train_set.iloc[:, -1].values.astype(int)
-                    # X_sparse = make_csr_matrix(X, site_freq)
+                    X = train_set.fillna(0).iloc[:, :(-1 - session_length)].values
+                    y = train_set.iloc[:, -1].values.astype(int)
+                    X_sparse = make_csr_matrix(X, site_freq)
 
                     filename = 'sessions_{}users_s{}_w{}.pkl'.format(num_users, session_length, window_size)
                     with open(os.path.join(PATH_TO_DATA, filename), 'wb') as fo:
                         pickle.dump(train_set, fo)
-                    # filename = 'X_sparse_{}users_s{}_w{}.pkl'.format(num_users, session_length, window_size)
-                    # with open(os.path.join(PATH_TO_DATA, filename), 'wb') as fo:
-                    #     pickle.dump(X_sparse, fo)
-                    # filename = 'y_{}users_s{}_w{}.pkl'.format(num_users, session_length, window_size)
-                    # with open(os.path.join(PATH_TO_DATA, filename), 'wb') as fo:
-                    #     pickle.dump(y, fo)
+                    filename = 'X_sparse_{}users_s{}_w{}.pkl'.format(num_users, session_length, window_size)
+                    with open(os.path.join(PATH_TO_DATA, filename), 'wb') as fo:
+                        pickle.dump(X_sparse, fo)
+                    filename = 'y_{}users_s{}_w{}.pkl'.format(num_users, session_length, window_size)
+                    with open(os.path.join(PATH_TO_DATA, filename), 'wb') as fo:
+                        pickle.dump(y, fo)
 
