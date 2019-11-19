@@ -383,10 +383,10 @@ def prepare_train_set_fe(path_to_sessions, site_freq_path, feature_names):
         output['timespan_mean'] = np.mean(time_deltas, axis=1)
 
     if 'daily_aсtivity' in feature_names:
-        da = np.full((len(sessions), ), 4)
-        da[np.logical_and(start >= 7, start <= 11)] = 0
-        da[np.logical_and(start >= 13, start <= 16)] = 1
-        da[np.logical_and(start >= 18, start <= 21)] = 3
+        output['daily_aсtivity'] = np.full((len(sessions), ), 4)
+        output['daily_aсtivity'][np.logical_and(start >= 7, start <= 11)] = 0
+        output['daily_aсtivity'][np.logical_and(start >= 13, start <= 16)] = 1
+        output['daily_aсtivity'][np.logical_and(start >= 18, start <= 21)] = 3
 
     if 'freq_facebook' in feature_names:
         output['freq_facebook'] = (sites == facebook_idx).sum(axis=1).to_numpy()
@@ -399,15 +399,16 @@ def prepare_train_set_fe(path_to_sessions, site_freq_path, feature_names):
         for idx in google_idxs:
             output['freq_google'] += (sites == idx).sum(axis=1).to_numpy()
 
-    # if 'timespan_youtube' in feature_names:
-    #     print(time_deltas.shape)
-    #     print((sites == youtube_idx).iloc[:, :-1].shape)
-    #     print(time_deltas[(sites == youtube_idx).iloc[:, :-1]].shape)
-    #     output['timespan_youtube'] = time_deltas[(sites == youtube_idx).iloc[:, :-1]].sum(axis=1)
-    #
-    # if 'timespan_mail' in feature_names:
-    #     for idx in mail_idxs:
-    #         output['timespan_mail'] = time_deltas[(sites == idx).iloc[:, :-1]].sum(axis=1)
+    if 'timespan_youtube' in feature_names:
+        for i in range(time_deltas.shape[1]):
+            indices = sites.iloc[:, i] == youtube_idx
+            output['timespan_youtube'][indices] += time_deltas[indices, i]
+
+    if 'timespan_mail' in feature_names:
+        for idx in mail_idxs:
+            for i in range(time_deltas.shape[1]):
+                indices = sites.iloc[:, i] == idx
+                output['timespan_mail'][indices] += time_deltas[indices, i]
 
     output['target'] = targets.to_numpy()
 
@@ -492,3 +493,31 @@ if __name__ == '__main__':
                     with open(os.path.join(PATH_TO_DATA, filename), 'wb') as fo:
                         pickle.dump(y, fo)
 
+    if 3 in ppstages:
+        for num_users in [10, 150]:
+            features = ['session_timespan', '#unique_sites', 'start_hour',
+                        'day_of_week', 'timespan_median', 'timespan_mean',
+                        'daily_aсtivity', 'freq_facebook', 'timespan_youtube',
+                        'timespan_mail', 'freq_googlevideo', 'freq_google']
+            train_data = prepare_train_set_fe(os.path.join(PATH_TO_DATA,
+                                                           'sessions_{}users.pkl'.format(num_users)),
+                                              site_freq_path=os.path.join(PATH_TO_DATA,
+                                                                          'site_freq_{}users.pkl'.format(num_users)),
+                                              feature_names=features)
+
+            columns = ['session_timespan',
+                       '#unique_sites',
+                       'start_hour',
+                       'day_of_week',
+                       'target']
+            new_features = train_data[columns]
+
+            with open(os.path.join(PATH_TO_DATA, 'new_features_{}users.pkl'.format(num_users)), 'wb') as fo:
+                pickle.dump(new_features, fo)
+
+            columns = ['#unique_sites', 'start_hour', 'daily_aсtivity', 'day_of_week',
+                       'timespan_youtube', 'timespan_mail', 'freq_googlevideo', 'target']
+            new_features = train_data[columns]
+
+            with open(os.path.join(PATH_TO_DATA, 'selected_features_{}users.pkl'.format(num_users)), 'wb') as fo:
+                pickle.dump(new_features, fo)
