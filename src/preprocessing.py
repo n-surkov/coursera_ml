@@ -440,6 +440,8 @@ if __name__ == '__main__':
         for i in ['3', '10', '150']:
             # Частоты сайтов
             site_freq = read_sites_freq(os.path.join(PATH_TO_DATA, '{}users'.format(i)))
+            with open(os.path.join(PATH_TO_DATA, 'site_freq_{}users.pkl'.format(i)), 'wb') as fo:
+                pickle.dump(site_freq, fo)
             # сессии по 10 сайтов
             train_data = prepare_train_set(os.path.join(PATH_TO_DATA, '{}users'.format(i)),
                                            os.path.join(PATH_TO_DATA, 'site_freq_{}users.pkl'.format(i)),
@@ -452,8 +454,6 @@ if __name__ == '__main__':
 
             with open(os.path.join(PATH_TO_DATA, 'sessions_{}users.pkl'.format(i)), 'wb') as fo:
                 pickle.dump(train_data, fo, protocol=2)
-            with open(os.path.join(PATH_TO_DATA, 'site_freq_{}users.pkl'.format(i)), 'wb') as fo:
-                pickle.dump(site_freq, fo)
             with open(os.path.join(PATH_TO_DATA, 'X_sparse_{}users.pkl'.format(i)), 'wb') as fo:
                 pickle.dump(X_sparse, fo, protocol=2)
             with open(os.path.join(PATH_TO_DATA, 'y_{}users.pkl'.format(i)), 'wb') as fo:
