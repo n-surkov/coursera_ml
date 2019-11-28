@@ -305,7 +305,7 @@ def make_fe_dtype(features, session_length):
     return dtype
 
 
-def prepare_train_set_fe(path_to_sessions, site_freq_path, feature_names):
+def prepare_train_set_fe(sessions, site_freq_path, feature_names):
     '''
     Формирование сессий с новыми фичами.
     столбцы:
@@ -336,9 +336,6 @@ def prepare_train_set_fe(path_to_sessions, site_freq_path, feature_names):
     :param window_size: ширина окна непересекающейся части сессии
     :return: pandas.DataFrame
     '''
-    with open(path_to_sessions, 'rb') as fo:
-        sessions = pickle.load(fo)
-
     with open(site_freq_path, 'rb') as fo:
         site_freq = pickle.load(fo)
 
@@ -499,8 +496,9 @@ if __name__ == '__main__':
                         'day_of_week', 'timespan_median', 'timespan_mean',
                         'daily_aсtivity', 'freq_facebook', 'timespan_youtube',
                         'timespan_mail', 'freq_googlevideo', 'freq_google']
-            train_data = prepare_train_set_fe(os.path.join(PATH_TO_DATA,
-                                                           'sessions_{}users.pkl'.format(num_users)),
+            with open(os.path.join(PATH_TO_DATA, 'sessions_{}users.pkl'.format(num_users)), 'rb') as fo:
+                sessions = pickle.load(fo)
+            train_data = prepare_train_set_fe(sessions,
                                               site_freq_path=os.path.join(PATH_TO_DATA,
                                                                           'site_freq_{}users.pkl'.format(num_users)),
                                               feature_names=features)
