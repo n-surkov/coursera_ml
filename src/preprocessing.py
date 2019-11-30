@@ -300,6 +300,18 @@ def make_fe_dtype(features, session_length):
     if 'freq_google' in features:
         dtype.append(('freq_google', int))
 
+    if 'live' in features:
+        dtype.append(('live', int))
+
+    if 'trouter' in features:
+        dtype.append(('trouter', int))
+
+    if 'skype' in features:
+        dtype.append(('skype', int))
+
+    if 'twitter' in features:
+        dtype.append(('twitter', int))
+
     dtype.append(('target', int))
 
     return dtype
@@ -327,6 +339,10 @@ def prepare_train_set_fe(sessions, site_freq_path, feature_names):
         timespan_mail -- суммарное время посещения сайта mail.google.com в сессии
         freq_googlevideo -- количество посещений сайтов "*googlevideo*"
         freq_google -- количество посещений "www.google.*"
+        live -- количество посещений "*live.com" и "*live.net"
+        trouter -- количество посещений "go.trouter.io"
+        skype -- количество посещений "*skype*"
+        twitter -- количество посещений "*twitter*"
     target -- id пользователя
 
     :param path_to_csv_files: путь к папке с .csv файлами пользователей
@@ -339,11 +355,15 @@ def prepare_train_set_fe(sessions, site_freq_path, feature_names):
     with open(site_freq_path, 'rb') as fo:
         site_freq = pickle.load(fo)
 
-    facebook_idx = site_freq['www.facebook.com'][0]
+    facebook_idxs = [site_freq[key][0] for key in site_freq.keys() if key.find('facebook.com') > -1]
     youtube_idx = site_freq['s.youtube.com'][0]
     mail_idxs = [site_freq[key][0] for key in site_freq.keys() if key.find('mail') > -1]
     gvideo_idxs = [site_freq[key][0] for key in site_freq.keys() if key.find('googlevideo') > -1]
     google_idxs = [site_freq[key][0] for key in site_freq.keys() if key.find('www.google.') > -1]
+    live_idxs = [site_freq[key][0] for key in site_freq.keys() if key.find('live.com') > -1 or key.find('live.net') > -1]
+    trouter_idx = site_freq['go.trouter.io'][0]
+    skype_idxs = [site_freq[key][0] for key in site_freq.keys() if key.find('skype') > -1]
+    twitter_idxs = [site_freq[key][0] for key in site_freq.keys() if key.find('twitter') > -1]
 
     sites = sessions[[col for col in sessions.columns if col.find('site') == 0]].fillna(0)
     output = np.zeros((len(sessions),), dtype=make_fe_dtype(feature_names, sites.shape[1]))
@@ -386,7 +406,8 @@ def prepare_train_set_fe(sessions, site_freq_path, feature_names):
         output['daily_aсtivity'][np.logical_and(start >= 18, start <= 21)] = 3
 
     if 'freq_facebook' in feature_names:
-        output['freq_facebook'] = (sites == facebook_idx).sum(axis=1).to_numpy()
+        for idx in facebook_idxs:
+            output['freq_facebook'] += (sites == idx).sum(axis=1).to_numpy()
 
     if 'freq_googlevideo' in feature_names:
         for idx in gvideo_idxs:
@@ -406,6 +427,21 @@ def prepare_train_set_fe(sessions, site_freq_path, feature_names):
             for i in range(time_deltas.shape[1]):
                 indices = sites.iloc[:, i] == idx
                 output['timespan_mail'][indices] += time_deltas[indices, i]
+
+    if 'live' in feature_names:
+        for idx in live_idxs:
+            output['live'] += (sites == idx).sum(axis=1).to_numpy()
+
+    if 'trouter' in feature_names:
+        output['trouter'] = (sites == trouter_idx).sum(axis=1).to_numpy()
+
+    if 'skype' in feature_names:
+        for idx in skype_idxs:
+            output['skype'] += (sites == idx).sum(axis=1).to_numpy()
+
+    if 'twitter' in feature_names:
+        for idx in twitter_idxs:
+            output['twitter'] += (sites == idx).sum(axis=1).to_numpy()
 
     output['target'] = targets.to_numpy()
 
