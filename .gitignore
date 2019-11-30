@@ -2,9 +2,8 @@
 __pycache__
 .ipynb_checkpoints
 
-data/capstone_user_identification/3users
-data/capstone_user_identification/10users
-data/capstone_user_identification/150users
-data/capstone_user_identification
-
+data/
 answers/
+solution/X_test_text.txt
+solution/X_train_text.txt
+solution/X_valid_text.txt
